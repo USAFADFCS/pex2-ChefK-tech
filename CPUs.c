@@ -40,7 +40,7 @@ void* FIFOcpu(void* param) {
 
     // p is the process currently running on this CPU.
     // p == NULL means the CPU is idle and must pick a new process from readyQ.
-    Process* p = NULL;
+    Process* p = NULL; 
 
     // This thread runs forever — one loop iteration = one simulation timestep.
     while (1) {
@@ -201,11 +201,55 @@ void* RRcpu(void* param) {
     int threadNum = ((CpuParams*) param)->threadNumber;
     SharedVars* svars = ((CpuParams*) param)->svars;
 
-    // Process* p = NULL;  // TODO: uncomment when you implement this function
+    Process* p = NULL;  // TODO: uncomment when you implement this function
+    int quantum = svars->quantum;
 
     while (1) {
         sem_wait(svars->cpuSems[threadNum]);
 
+        // If out of quantum timesteps with process still remaining
+        // requeues the process at the end of queue
+        if (quantum == 0 && p != NULL){
+            pthread_mutex_lock(&(svars->readyQLock));
+            p->requeued = true;
+            qInsert(&(svars->readyQ), p);
+            
+            pthread_mutex_unlock(&(svars->readyQLock));
+
+            p = NULL;
+        }
+ 
+        if (p == NULL) {
+            pthread_mutex_lock(&(svars->readyQLock));
+
+            // Same code as FIFO because we choose from the head of queue
+            p = qRemove(&(svars->readyQ), 0);
+
+            if (p == NULL) {
+                printf("No process to schedule\n");
+            } else {
+                printf("Scheduling PID %d\n", p->PID);
+                // Saving the 'quantum' timesteps to a convenient variable
+                quantum = svars->quantum;
+            }
+
+            pthread_mutex_unlock(&(svars->readyQLock));
+        }
+         
+        // ── Execution: one unit of work ──────────────────────────────────
+        if (p != NULL) {
+            p->burstRemaining--;
+            // Executes one timestep of work according to the number of quantums
+            quantum--;
+            
+            if (p->burstRemaining == 0) {
+                pthread_mutex_lock(&(svars->finishedQLock));
+                qInsert(&(svars->finishedQ), p);
+                pthread_mutex_unlock(&(svars->finishedQLock));
+
+                p = NULL;
+            }
+        }
         sem_post(svars->mainSem);
     }
 }
@@ -219,14 +263,56 @@ void* SRTFcpu(void* param) {
     int threadNum = ((CpuParams*) param)->threadNumber;
     SharedVars* svars = ((CpuParams*) param)->svars;
 
-    // Process* p = NULL;  // TODO: uncomment when you implement this function
+    Process* p = NULL;  // TODO: uncomment when you implement this function
 
     while (1) {
         sem_wait(svars->cpuSems[threadNum]);
 
+        // We now need to interrupt (preempt) the mechanism should
+        // there be a process with a shorter burst remaining time
+        if (p != NULL && p->burstRemaining > qShortestBR(&(svars->readyQ))){
+            pthread_mutex_lock(&(svars->readyQLock));
+
+            p->requeued = true;
+            qInsert(&(svars->readyQ), p);
+            
+            pthread_mutex_unlock(&(svars->readyQLock));
+
+            p = NULL;
+        }
+
+        if (p == NULL) {
+            pthread_mutex_lock(&(svars->readyQLock));
+            
+            // We now need to select which process has the shortest burst
+            // time remaining
+            p = qRemove(&(svars->readyQ), qShortest(&(svars->readyQ)));
+
+            if (p == NULL) {
+                printf("No process to schedule\n");
+            } else {
+                printf("Scheduling PID %d\n", p->PID);
+            }
+
+            pthread_mutex_unlock(&(svars->readyQLock));
+        }
+
+        // ── Execution: one unit of work ──────────────────────────────────
+        if (p != NULL) {
+            p->burstRemaining--;
+
+            if (p->burstRemaining == 0) {
+                pthread_mutex_lock(&(svars->finishedQLock));
+                qInsert(&(svars->finishedQ), p);
+                pthread_mutex_unlock(&(svars->finishedQLock));
+
+                p = NULL;
+            }
+        } 
         sem_post(svars->mainSem);
     }
 }
+
 
 // ============================================================
 // PP — Preemptive Priority
@@ -237,11 +323,51 @@ void* PPcpu(void* param) {
     int threadNum = ((CpuParams*) param)->threadNumber;
     SharedVars* svars = ((CpuParams*) param)->svars;
 
-    // Process* p = NULL;  // TODO: uncomment when you implement this function
+    Process* p = NULL;  // TODO: uncomment when you implement this function
 
     while (1) {
         sem_wait(svars->cpuSems[threadNum]);
 
+        // We now need to interrupt (preempt) the mechanism should
+        // there be a process with a higher priority
+        if (p != NULL && p->priority > qGetPriority(&(svars->readyQ))){
+            pthread_mutex_lock(&(svars->readyQLock));
+
+            p->requeued = true;
+            qInsert(&(svars->readyQ), p);
+            
+            pthread_mutex_unlock(&(svars->readyQLock));
+
+            p = NULL;
+        }
+
+        if (p == NULL) {
+            pthread_mutex_lock(&(svars->readyQLock));
+            
+            // We now need to select which process has the greatest priority
+            p = qRemove(&(svars->readyQ), qPriority(&(svars->readyQ)));
+
+            if (p == NULL) {
+                printf("No process to schedule\n");
+            } else {
+                printf("Scheduling PID %d\n", p->PID);
+            }
+
+            pthread_mutex_unlock(&(svars->readyQLock));
+        }
+
+        // ── Execution: one unit of work ──────────────────────────────────
+        if (p != NULL) {
+            p->burstRemaining--;
+
+            if (p->burstRemaining == 0) {
+                pthread_mutex_lock(&(svars->finishedQLock));
+                qInsert(&(svars->finishedQ), p);
+                pthread_mutex_unlock(&(svars->finishedQLock));
+
+                p = NULL;
+            }
+        } 
         sem_post(svars->mainSem);
     }
 }
